@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: Goldalion
+## Notes: Поиск выгодных лотов для перепродажи. /gold открывает окно, скан запускается при открытом аукционе.
+## SavedVariables: GoldalionDB
+
+Deals.lua
+Scan.lua
+UI.lua
