@@ -79,6 +79,24 @@ local function initRow(row, deal)
   cells.reason:SetText(REASON[deal.reason])
 end
 
+-- Сортировка списка: клик по заголовку колонки, повторный клик меняет направление.
+local sortKey, sortDesc = "profit", true
+
+local function sortValue(deal)
+  -- ponytail: названия сравниваются побайтно (в UTF-8 «ё» окажется после «я»)
+  if sortKey == "name" then return deal.link:match("%[(.-)%]") or "" end
+  return deal[sortKey]
+end
+
+local function sortDeals(deals)
+  table.sort(deals, function(a, b)
+    local x, y = sortValue(a), sortValue(b)
+    if x == y then return a.profit > b.profit end
+    if sortDesc then return x > y end
+    return x < y
+  end)
+end
+
 local function idleStatus()
   local last = ns.db.lastScan
   if not last then return "Открой аукцион и нажми «Сканировать»." end
@@ -231,8 +249,47 @@ function ns.initUI()
   header:SetHeight(18)
   header:SetPoint("BOTTOMLEFT", scrollBox, "TOPLEFT", 0, 6)
   header:SetPoint("BOTTOMRIGHT", scrollBox, "TOPRIGHT", 0, 6)
-  local headerCells = createCells(header, "GameFontNormalSmall")
-  for _, column in ipairs(COLUMNS) do headerCells[column[1]]:SetText(column[2]) end
+  local arrow = header:CreateTexture(nil, "OVERLAY")
+  arrow:SetAtlas("auctionhouse-ui-sortarrow", true)
+  local headerTexts = {}
+
+  local function showArrow()
+    local text = headerTexts[sortKey]
+    arrow:ClearAllPoints()
+    if text:GetJustifyH() == "RIGHT" then
+      arrow:SetPoint("RIGHT", text, "LEFT", -3, 0)
+    else
+      arrow:SetPoint("LEFT", text, "RIGHT", 3, 0)
+    end
+    if sortDesc then arrow:SetTexCoord(0, 1, 0, 1) else arrow:SetTexCoord(0, 1, 1, 0) end
+  end
+
+  -- Новая колонка сортируется по убыванию, текстовая — по возрастанию.
+  function ns.sortBy(key)
+    if key == sortKey then
+      sortDesc = not sortDesc
+    else
+      sortKey, sortDesc = key, key ~= "name" and key ~= "reason"
+    end
+    showArrow()
+    ns.refresh(true)
+  end
+
+  local x = FIRST_CELL_X
+  for _, column in ipairs(COLUMNS) do
+    local key, align = column[1], column[4]
+    local button = CreateFrame("Button", nil, header)
+    button:SetSize(column[3], 18)
+    button:SetPoint("LEFT", x, 0)
+    local text = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    text:SetPoint(align) -- без ширины: стрелка прижимается к самому тексту
+    text:SetJustifyH(align)
+    text:SetText(column[2])
+    button:SetScript("OnClick", function() ns.sortBy(key) end)
+    headerTexts[key] = text
+    x = x + column[3] + CELL_GAP
+  end
+  showArrow()
 
   local empty = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
   empty:SetPoint("CENTER", f.Inset)
@@ -243,6 +300,7 @@ function ns.initUI()
     status:SetText(ns.status or idleStatus())
     scanButton:SetEnabled(ns.auctionOpen == true and ns.scanning == nil)
     if dealsChanged then
+      sortDeals(ns.db.lastDeals)
       scrollBox:SetDataProvider(CreateDataProvider(ns.db.lastDeals))
       empty:SetShown(#ns.db.lastDeals == 0)
     end

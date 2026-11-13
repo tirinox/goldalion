@@ -211,6 +211,19 @@ proxies.GOLDALION_openWithAuction.set(false)
 runTimers()
 assert(#db.lastDeals == 2 and ns.opts.openWithAuction == false)
 
+-- Клик по заголовку сортирует список: новая колонка по убыванию, повторный клик — по возрастанию,
+-- текстовая колонка сразу по возрастанию.
+ns.sortBy("cost")
+assert(db.lastDeals[1].cost == 4500 and db.lastDeals[2].cost == 200 and provider == db.lastDeals)
+ns.sortBy("cost")
+assert(db.lastDeals[1].cost == 200 and db.lastDeals[2].cost == 4500)
+ns.sortBy("name")
+assert(db.lastDeals[1].link:find(MONKEY, 1, true) and db.lastDeals[2].link:find("Ткань", 1, true))
+ns.sortBy("name")
+assert(db.lastDeals[1].link:find("Ткань", 1, true))
+ns.sortBy("profit")
+assert(db.lastDeals[1].profit >= db.lastDeals[2].profit)
+
 -- Выключенная настройка не открывает окно; /gold переключает его.
 shown = false
 fire("AUCTION_HOUSE_CLOSED")
