@@ -61,9 +61,14 @@ local function initRow(row, deal)
       local min, median, lots, variants = ns.variantStats(deal.key)
       if deal.price then -- сделка режима «торговцы»
         GameTooltip:AddLine(" ")
-        GameTooltip:AddDoubleLine("Продаёт", deal.reason .. (deal.zone ~= "" and ", " .. deal.zone or ""), 1, 1, 1, 1, 1, 1)
+        local seller = deal.reason .. (deal.zone ~= "" and ", " .. deal.zone or "")
+        if (deal.others or 0) > 0 then seller = seller .. (" и ещё %d"):format(deal.others) end
+        GameTooltip:AddDoubleLine("Продаёт", seller, 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine("Цена за штуку", ns.money(deal.price), 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine("Купить штук", deal.units .. (deal.limited and " (запас ограничен)" or ""), 1, 1, 1, 1, 1, 1)
+        if deal.seed then
+          GameTooltip:AddLine("Цена и торговец из базы, у торговца не проверены: запас может быть ограничен.", 1, 0.5, 0.25, true)
+        end
         if not deal.min then
           GameTooltip:AddLine("На аукционе сейчас нет, цена взята из истории.")
         elseif deal.ref < deal.min then
@@ -323,7 +328,7 @@ function ns.initUI()
       sortDeals(deals)
       scrollBox:SetDataProvider(CreateDataProvider(deals))
       empty:SetShown(#deals == 0)
-      empty:SetText(tab == VENDOR_TAB and not next(ns.db.vendor)
+      empty:SetText(tab == VENDOR_TAB and not next(ns.db.vendor) and not LibQuestieDB
         and "Открой окно любого торговца: аддон запомнит его товары и цены." or "Сделок нет")
     end
   end

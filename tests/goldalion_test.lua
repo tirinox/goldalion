@@ -2,8 +2,13 @@
 -- 1) правила режимов 1 и 2 на цифрах из docs/requirements.md; 2) сквозной прогон скана на заглушках API.
 
 local ns = {}
+assert(loadfile("Goldalion/VendorPrices.lua"))("Goldalion", ns)
 assert(loadfile("Goldalion/Deals.lua"))("Goldalion", ns)
 local opts = ns.opts
+
+-- Сгенерированные цены: грубая нить 10 м, пустой флакон 20 м за пять штук, стак 20.
+assert(ns.vendorPrice[2320] == 10 and ns.vendorPrice[3371] == 4 and ns.vendorStack[3371] == 20)
+assert(ns.vendorStack[6217] == nil, "предметы со стаком 1 в таблицу стаков не попадают")
 
 local function lots(...)
   local list = {}
@@ -119,7 +124,22 @@ local AUCTIONS = {
   { "Без выкупа", 1, 2, 0, 400, true },
   { "Нить", 5, 1, 500, 600, true },    -- товар торговца: 1 с за штуку
   { "Нить", 1, 1, 120, 600, true },
+  { "Мука", 2, 1, 400, 700, true },    -- у торговца игрок её не видел: цена и продавец из баз
+  { "Мука", 1, 1, 200, 700, true },
 }
+ns.vendorPrice[700], ns.vendorStack[700] = 25, 20
+ns.vendorPrice[500] = 1 -- у ткани есть цена покупки, но Questie не знает её торговцев
+-- Заглушка Questie: муку продают три NPC, первый — только Альянсу.
+LibQuestieDB = {
+  RequireContract = function(version) return version == 4 end,
+  Item = { vendors = function(id) return id == 700 and { 11, 12, 13 } or nil end },
+  Npc = {
+    friendlyToFaction = function(id) return ({ [11] = "A", [12] = "AH", [13] = "H" })[id] end,
+    name = function(id) return "Пекарь " .. id end,
+    zoneID = function() return 1637 end,
+  },
+}
+C_Map = { GetAreaInfo = function(area) return "Зона " .. area end }
 -- { название, itemID, цена за пачку, штук в пачке, запас (−1 — без ограничения), стак, цена не только в деньгах }
 local MERCHANT = {
   { "Нить", 600, 50, 5, -1, 20 },
@@ -244,14 +264,19 @@ assert(ns.scanning == nil and ns.status == nil)
 assert(#db.lastDeals == 1, "ожидалась одна сделка, получено " .. #db.lastDeals)
 local deal = db.lastDeals[1]
 assert(deal.link:find(MONKEY, 1, true) and deal.lots == 2 and deal.cost == 4500 and deal.ref == 10000)
-assert(db.lastScan.lots == #AUCTIONS and db.lastScan.items == 4 and db.lastScan.withoutItemData == 0)
+assert(db.lastScan.lots == #AUCTIONS and db.lastScan.items == 5 and db.lastScan.withoutItemData == 0)
 assert(provider == db.lastDeals, "список в окне обновлён после скана")
 
 -- Вкладка «Торговцы»: нить по 10 м у торговца против 1 с на аукционе; рецепт без цены не показан.
-assert(#db.vendorDeals == 1, "ожидалась одна сделка торговцев, получено " .. #db.vendorDeals)
-local vendorDeal = db.vendorDeals[1]
+-- Мука по 25 м из таблицы цен против 2 с на аукционе; продавец из Questie, подходящий Орде.
+assert(#db.vendorDeals == 2, "ожидались две сделки торговцев, получено " .. #db.vendorDeals)
+local seedDeal, vendorDeal = db.vendorDeals[1], db.vendorDeals[2]
+assert(seedDeal.link:find("Мука", 1, true) and seedDeal.seed == true and seedDeal.price == 25)
+assert(seedDeal.reason == "Пекарь 12" and seedDeal.zone == "Зона 1637" and seedDeal.others == 1)
+assert(seedDeal.units == 20 and seedDeal.cost == 500 and seedDeal.ref == 200 and seedDeal.lots == 3)
 assert(vendorDeal.link:find("Нить", 1, true) and vendorDeal.reason == "Лавочник" and vendorDeal.zone == "Оргриммар")
 assert(vendorDeal.units == 20 and vendorDeal.cost == 200 and vendorDeal.ref == 100 and vendorDeal.lots == 6)
+assert(vendorDeal.seed == nil, "увиденный у торговца товар не помечается как непроверенный")
 ns.selectTab(2)
 assert(provider == db.vendorDeals and db.tab == 2, "вкладка показывает свой список")
 local vendorRow = dummy()
@@ -262,7 +287,16 @@ runTimers()
 assert(ns.opts.vendorMinProfit == 5000 and #db.vendorDeals == 0 and provider == db.vendorDeals)
 proxies.GOLDALION_vendorMinProfit.set(10)
 runTimers()
-assert(#db.vendorDeals == 1)
+assert(#db.vendorDeals == 2)
+-- Игрок дошёл до торговца мукой: его цена заменяет стартовую.
+MERCHANT[#MERCHANT + 1] = { "Мука", 700, 30, 1, -1, 20 }
+fire("MERCHANT_SHOW")
+runTimers()
+seedDeal = db.vendorDeals[1]
+assert(seedDeal.link:find("Мука", 1, true) and seedDeal.seed == nil and seedDeal.price == 30 and seedDeal.reason == "Лавочник")
+-- Без Questie или при его ошибке стартовых данных нет, пересчёт не падает.
+LibQuestieDB.Item.vendors = function() error("сломано") end
+assert(ns.seedVendor(701) == false and ns.seedVendor(700).npc == "Пекарь 12", "ответ по предмету кешируется")
 ns.selectTab(1)
 assert(provider == db.lastDeals)
 

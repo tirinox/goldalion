@@ -34,6 +34,40 @@ function ns.money(copper)
   return ("%dм"):format(copper)
 end
 
+-- Стартовые данные о товаре торговца, пока игрок сам к нему не зашёл: цена из VendorPrices.lua,
+-- а кто продаёт — из базы Questie, если она установлена. Запас и скидка за репутацию неизвестны.
+local QUESTIE_CONTRACT = 4
+local seeds = {} -- itemID → запись или false
+
+local function lookupSeed(itemID)
+  local price, questie = ns.vendorPrice[itemID], LibQuestieDB
+  if not (price and questie and questie.RequireContract(QUESTIE_CONTRACT)) then return false end
+  local faction = UnitFactionGroup("player") == "Horde" and "H" or "A"
+  local seed = false
+  for _, npcID in ipairs(questie.Item.vendors(itemID) or {}) do
+    local friendly = questie.Npc.friendlyToFaction(npcID)
+    if not friendly or friendly:find(faction, 1, true) then
+      if seed then
+        seed.others = seed.others + 1
+      else
+        local area = questie.Npc.zoneID(npcID)
+        seed = { price = price, stack = ns.vendorStack[itemID] or 1, seed = true, others = 0,
+                 npc = questie.Npc.name(npcID) or "?", zone = area and C_Map.GetAreaInfo(area) or "" }
+      end
+    end
+  end
+  return seed
+end
+
+function ns.seedVendor(itemID)
+  if seeds[itemID] == nil then
+    -- чужой аддон: его ошибка не должна ронять пересчёт
+    local ok, seed = pcall(lookupSeed, itemID)
+    seeds[itemID] = ok and seed or false
+  end
+  return seeds[itemID]
+end
+
 -- Пересчитывает сделки по лотам последнего скана с текущими настройками.
 function ns.evaluate()
   local scan = ns.scan
@@ -55,13 +89,26 @@ function ns.evaluate()
 
   -- Режим «торговцы»: качество не фильтруется, предмет может отсутствовать на аукционе.
   local vendorDeals = {}
-  for itemID, vendor in pairs(db.vendor) do
-    local key = itemID .. ":" .. (vendor.link:match("%[(.-)%]") or "")
+  local function consider(key, vendor, link)
     local hist = ns.historyMedian(scan.history[key], opts.minHistoryDays, scan.day)
     local deal = ns.findVendorDeal(scan.lots[key] or {}, hist, vendor, opts)
     if deal then
-      deal.key, deal.link, deal.reason, deal.zone = key, vendor.link, vendor.npc, vendor.zone
+      deal.key, deal.link, deal.reason, deal.zone = key, link, vendor.npc, vendor.zone
+      deal.seed, deal.others = vendor.seed, vendor.others
       vendorDeals[#vendorDeals + 1] = deal
+    end
+  end
+  for itemID, vendor in pairs(db.vendor) do
+    consider(itemID .. ":" .. (vendor.link:match("%[(.-)%]") or ""), vendor, vendor.link)
+  end
+  -- Товары, которых игрок у торговцев ещё не видел. В истории есть и все предметы текущего скана.
+  for key in pairs(scan.history) do
+    local id, name = key:match("^(%d+):(.*)")
+    local itemID = tonumber(id)
+    local vendor = itemID and not db.vendor[itemID] and ns.seedVendor(itemID)
+    if vendor then
+      local info = scan.info[key]
+      consider(key, vendor, info and info.link or ("|Hitem:%d|h[%s]|h"):format(itemID, name))
     end
   end
   table.sort(vendorDeals, function(a, b) return a.profit > b.profit end)

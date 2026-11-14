@@ -2,7 +2,9 @@
 ## Title: Goldalion
 ## Notes: Поиск выгодных лотов для перепродажи. /gold открывает окно, скан запускается при открытом аукционе.
 ## SavedVariables: GoldalionDB
+## OptionalDeps: QuestieDB
 
+VendorPrices.lua
 Deals.lua
 Scan.lua
 UI.lua
