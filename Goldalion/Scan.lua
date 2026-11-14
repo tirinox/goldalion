@@ -1,4 +1,4 @@
--- Полный скан аукциона, история цен и пересчёт сделок режима 1.
+-- Полный скан аукциона, история цен, товары торговцев и пересчёт сделок обоих режимов.
 --   /gold        показать или скрыть окно
 --   /gold scan   полный скан (аукцион должен быть открыт)
 
@@ -52,6 +52,43 @@ function ns.evaluate()
   end
   table.sort(deals, function(a, b) return a.profit > b.profit end)
   db.lastDeals = deals
+
+  -- Режим «торговцы»: качество не фильтруется, предмет может отсутствовать на аукционе.
+  local vendorDeals = {}
+  for itemID, vendor in pairs(db.vendor) do
+    local key = itemID .. ":" .. (vendor.link:match("%[(.-)%]") or "")
+    local hist = ns.historyMedian(scan.history[key], opts.minHistoryDays, scan.day)
+    local deal = ns.findVendorDeal(scan.lots[key] or {}, hist, vendor, opts)
+    if deal then
+      deal.key, deal.link, deal.reason, deal.zone = key, vendor.link, vendor.npc, vendor.zone
+      vendorDeals[#vendorDeals + 1] = deal
+    end
+  end
+  table.sort(vendorDeals, function(a, b) return a.profit > b.profit end)
+  db.vendorDeals = vendorDeals
+end
+
+-- Запоминает товары открытого торговца: только то, что продаётся за деньги.
+-- Цена — та, что видит этот персонаж (со скидкой за репутацию).
+local function recordMerchant()
+  local npc, zone, added = UnitName("npc") or "?", GetRealZoneText() or "", 0
+  for i = 1, GetMerchantNumItems() do
+    local info, itemID, link = C_MerchantFrame.GetItemInfo(i), GetMerchantItemID(i), GetMerchantItemLink(i)
+    if info and itemID and link and info.price > 0 and info.stackCount > 0 and not info.hasExtendedCost then
+      local price, known = info.price / info.stackCount, db.vendor[itemID]
+      -- у разных торговцев цена может отличаться: держим самого дешёвого
+      if not known or price <= known.price or known.npc == npc then
+        if not known then added = added + 1 end
+        db.vendor[itemID] = { price = price, stack = GetMerchantItemMaxStack(i) or 1,
+                              limited = info.numAvailable >= 0 or nil, -- −1 значит «без ограничения»
+                              npc = npc, zone = zone, link = link }
+      end
+    end
+  end
+  if added > 0 then
+    say(("запомнил новых товаров торговца: %d (%s)"):format(added, npc))
+    ns.optionsChanged()
+  end
 end
 
 -- Цены этого же предмета с другими суффиксами по последнему скану:
@@ -192,6 +229,8 @@ frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("AUCTION_HOUSE_SHOW")
 frame:RegisterEvent("AUCTION_HOUSE_CLOSED")
 frame:RegisterEvent("REPLICATE_ITEM_LIST_UPDATE")
+frame:RegisterEvent("MERCHANT_SHOW")
+frame:RegisterEvent("MERCHANT_UPDATE") -- данные товаров догружаются уже после MERCHANT_SHOW
 frame:SetScript("OnEvent", function(_, event, name)
   if event == "ADDON_LOADED" then
     if name == ADDON then
@@ -199,6 +238,8 @@ frame:SetScript("OnEvent", function(_, event, name)
       db = GoldalionDB
       db.history = db.history or {}
       db.lastDeals = db.lastDeals or {}
+      db.vendor = db.vendor or {}           -- itemID → товар торговца
+      db.vendorDeals = db.vendorDeals or {}
       db.opts = db.opts or {}
       ns.db = db
       -- В db.opts лежит только то, что игрок поменял; остальное берётся из значений по умолчанию.
@@ -217,6 +258,8 @@ frame:SetScript("OnEvent", function(_, event, name)
       say("аукцион закрыт, скан прерван")
     end
     setStatus(nil)
+  elseif event == "MERCHANT_SHOW" or event == "MERCHANT_UPDATE" then
+    recordMerchant()
   elseif ns.scanning == "wait" then -- первый REPLICATE_ITEM_LIST_UPDATE; дальше он сыплется на каждый догруженный предмет
     ns.scanning, total = "read", AH.GetNumReplicateItems()
     lotsByKey, infoByKey, deferred, requested = {}, {}, {}, {}

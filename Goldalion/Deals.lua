@@ -1,4 +1,4 @@
--- Режим 1 «большая скидка»: правила в docs/requirements.md.
+-- Режим 1 «большая скидка» и режим 2 «торговцы»: правила в docs/requirements.md.
 -- Чистая логика без API игры, проверяется в tests/goldalion_test.lua.
 
 local _, ns = ...
@@ -18,6 +18,7 @@ ns.opts = {
   -- ponytail: комиссия 5% взята из Classic и в Forever не проверена; сверить по первому письму о продаже
   cut = 0.05,
   openWithAuction = true, -- показывать окно при открытии аукциона
+  vendorMinProfit = 10 * 100, -- режим «торговцы»: 10 с с одной закупки (стака)
 }
 
 function ns.median(sorted)
@@ -79,4 +80,27 @@ function ns.findDeal(lots, hist, opts)
   if hist then try(hist, "history") end
 
   return best
+end
+
+-- Режим 2 «торговцы»: купить у NPC и выставить на аукцион.
+-- lots: лоты предмета на аукционе (может быть пусто); hist: историческая медиана или nil.
+-- vendor: { price = цена за штуку у торговца, stack = размер стака, limited = запас ограничен }.
+-- Возвращает { lots = штук на аукционе, units, cost, ref, discount, profit, price, min, limited } или nil.
+function ns.findVendorDeal(lots, hist, vendor, opts)
+  -- ponytail: опорная цена — самый дешёвый лот, поэтому один демпингующий лот прячет сделку;
+  -- считать цену на глубине в стак, если начнёт мешать
+  local min, supply = nil, 0
+  for _, lot in ipairs(lots) do
+    supply = supply + lot.count
+    if not min or lot.price < min then min = lot.price end
+  end
+  local ref = min and hist and math.min(min, hist) or min or hist
+  if not ref then return nil end -- на аукционе нет и раньше не было: цена неизвестна
+
+  local units = vendor.limited and 1 or vendor.stack
+  local cost = units * vendor.price
+  local profit = units * ref * (1 - opts.cut) - cost
+  if profit < opts.vendorMinProfit then return nil end
+  return { lots = supply, units = units, cost = cost, ref = ref, discount = 1 - vendor.price / ref,
+           profit = profit, price = vendor.price, min = min, limited = vendor.limited }
 end

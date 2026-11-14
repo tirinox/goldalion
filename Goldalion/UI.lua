@@ -5,27 +5,34 @@ local _, ns = ...
 local ROW_HEIGHT = 22
 local CELL_GAP = 8
 local FIRST_CELL_X = 28 -- место под иконку
-local COLUMNS = { -- ключ, заголовок, ширина, выравнивание
-  { "name", "Предмет", 240, "LEFT" },
-  { "lots", "Лотов", 50, "RIGHT" },
-  { "cost", "Выкуп", 85, "RIGHT" },
-  { "ref", "Опорная", 85, "RIGHT" },
-  { "discount", "Скидка", 60, "RIGHT" },
-  { "profit", "Прибыль", 85, "RIGHT" },
-  { "reason", "Причина", 80, "LEFT" },
+local COLUMNS = { -- ключ, ширина, выравнивание, заголовок на вкладке «Скидки», на вкладке «Торговцы»
+  { "name", 240, "LEFT", "Предмет", "Предмет" },
+  { "lots", 50, "RIGHT", "Лотов", "На ауке" },
+  { "cost", 85, "RIGHT", "Выкуп", "Закупка" },
+  { "ref", 85, "RIGHT", "Опорная", "Аукцион" },
+  { "discount", 60, "RIGHT", "Скидка", "Скидка" },
+  { "profit", 85, "RIGHT", "Прибыль", "Прибыль" },
+  { "reason", 110, "LEFT", "Причина", "Торговец" },
 }
+local TABS = { "Скидки", "Торговцы" }
+local VENDOR_TAB = 2
 local REASON = { neighbors = "соседи", history = "история" }
+local tab = 1
+
+local function currentDeals()
+  return tab == VENDOR_TAB and ns.db.vendorDeals or ns.db.lastDeals
+end
 
 local function createCells(parent, font)
   local cells, x = {}, FIRST_CELL_X
   for _, column in ipairs(COLUMNS) do
     local cell = parent:CreateFontString(nil, "OVERLAY", font)
     cell:SetPoint("LEFT", parent, "LEFT", x, 0)
-    cell:SetWidth(column[3])
-    cell:SetJustifyH(column[4])
+    cell:SetWidth(column[2])
+    cell:SetJustifyH(column[3])
     cell:SetWordWrap(false)
     cells[column[1]] = cell
-    x = x + column[3] + CELL_GAP
+    x = x + column[2] + CELL_GAP
   end
   return cells
 end
@@ -49,9 +56,21 @@ local function initRow(row, deal)
     row:RegisterForClicks("LeftButtonUp")
     row:SetScript("OnEnter", function(self)
       GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-      GameTooltip:SetHyperlink(self.deal.link)
-      local min, median, lots, variants = ns.variantStats(self.deal.key)
-      if min then
+      local deal = self.deal
+      GameTooltip:SetHyperlink(deal.link)
+      local min, median, lots, variants = ns.variantStats(deal.key)
+      if deal.price then -- сделка режима «торговцы»
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddDoubleLine("Продаёт", deal.reason .. (deal.zone ~= "" and ", " .. deal.zone or ""), 1, 1, 1, 1, 1, 1)
+        GameTooltip:AddDoubleLine("Цена за штуку", ns.money(deal.price), 1, 1, 1, 1, 1, 1)
+        GameTooltip:AddDoubleLine("Купить штук", deal.units .. (deal.limited and " (запас ограничен)" or ""), 1, 1, 1, 1, 1, 1)
+        if not deal.min then
+          GameTooltip:AddLine("На аукционе сейчас нет, цена взята из истории.")
+        elseif deal.ref < deal.min then
+          GameTooltip:AddDoubleLine("Минимум на аукционе", ns.money(deal.min), 1, 1, 1, 1, 1, 1)
+          GameTooltip:AddLine("Обычно дешевле: цена взята из истории.")
+        end
+      elseif min then
         GameTooltip:AddLine(" ")
         GameTooltip:AddLine(("С другими суффиксами: лотов %d, вариантов %d"):format(lots, variants))
         GameTooltip:AddDoubleLine("Минимум", ns.money(min), 1, 1, 1, 1, 1, 1)
@@ -76,7 +95,7 @@ local function initRow(row, deal)
   cells.ref:SetText(ns.money(deal.ref))
   cells.discount:SetText(("%.0f%%"):format(deal.discount * 100))
   cells.profit:SetText(ns.money(deal.profit))
-  cells.reason:SetText(REASON[deal.reason])
+  cells.reason:SetText(REASON[deal.reason] or deal.reason) -- у торговцев здесь имя NPC
 end
 
 -- Сортировка списка: клик по заголовку колонки, повторный клик меняет направление.
@@ -101,7 +120,7 @@ local function idleStatus()
   local last = ns.db.lastScan
   if not last then return "Открой аукцион и нажми «Сканировать»." end
   local text = ("Скан %d мин назад: лотов %d, сделок %d."):format(
-    math.floor((time() - last.time) / 60), last.lots, #ns.db.lastDeals)
+    math.floor((time() - last.time) / 60), last.lots, #currentDeals())
   if not ns.scan then text = text .. " Список сохранён с прошлого сеанса." end
   return text
 end
@@ -173,6 +192,9 @@ local function registerSettings()
   slider("outlierFactor", "Отсечение дорогих лотов",
     "Лоты дороже стольких медиан не считаются конкурентами.", 2, 20, 1, text("×%d"))
 
+  slider("vendorMinProfit", "Торговцы: минимальная прибыль",
+    "Вкладка «Торговцы»: прибыль с одной закупки (стака) не меньше этой суммы.", 0, 200, 5, text("%d с"), scaled(100))
+
   Settings.CreateDropdown(category, proxy("minQuality", "Минимальное качество"), function()
     local container = Settings.CreateControlTextContainer()
     for quality = 1, 4 do
@@ -194,7 +216,7 @@ function ns.initUI()
   local category = registerSettings()
 
   local width = FIRST_CELL_X + 60 -- отступы и полоса прокрутки
-  for _, column in ipairs(COLUMNS) do width = width + column[3] + CELL_GAP end
+  for _, column in ipairs(COLUMNS) do width = width + column[2] + CELL_GAP end
 
   local f = CreateFrame("Frame", "GoldalionFrame", UIParent, "ButtonFrameTemplate")
   ButtonFrameTemplate_HidePortrait(f)
@@ -277,34 +299,52 @@ function ns.initUI()
 
   local x = FIRST_CELL_X
   for _, column in ipairs(COLUMNS) do
-    local key, align = column[1], column[4]
+    local key, align = column[1], column[3]
     local button = CreateFrame("Button", nil, header)
-    button:SetSize(column[3], 18)
+    button:SetSize(column[2], 18)
     button:SetPoint("LEFT", x, 0)
     local text = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     text:SetPoint(align) -- без ширины: стрелка прижимается к самому тексту
     text:SetJustifyH(align)
-    text:SetText(column[2])
     button:SetScript("OnClick", function() ns.sortBy(key) end)
     headerTexts[key] = text
-    x = x + column[3] + CELL_GAP
+    x = x + column[2] + CELL_GAP
   end
-  showArrow()
 
   local empty = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
   empty:SetPoint("CENTER", f.Inset)
-  empty:SetText("Сделок нет")
 
   function ns.refresh(dealsChanged)
     if not f:IsShown() then return end
     status:SetText(ns.status or idleStatus())
     scanButton:SetEnabled(ns.auctionOpen == true and ns.scanning == nil)
     if dealsChanged then
-      sortDeals(ns.db.lastDeals)
-      scrollBox:SetDataProvider(CreateDataProvider(ns.db.lastDeals))
-      empty:SetShown(#ns.db.lastDeals == 0)
+      local deals = currentDeals()
+      sortDeals(deals)
+      scrollBox:SetDataProvider(CreateDataProvider(deals))
+      empty:SetShown(#deals == 0)
+      empty:SetText(tab == VENDOR_TAB and not next(ns.db.vendor)
+        and "Открой окно любого торговца: аддон запомнит его товары и цены." or "Сделок нет")
     end
   end
+
+  -- Вкладки под окном: у каждой свой список сделок и свои заголовки колонок.
+  for id, title in ipairs(TABS) do
+    local button = CreateFrame("Button", "GoldalionFrameTab" .. id, f, "PanelTabButtonTemplate", id)
+    button:SetText(title)
+    button:SetScript("OnClick", function() ns.selectTab(id) end)
+    if id == 1 then button:SetPoint("TOPLEFT", f, "BOTTOMLEFT", 11, 2) end
+  end
+  PanelTemplates_SetNumTabs(f, #TABS)
+
+  function ns.selectTab(id)
+    tab, ns.db.tab = id, id
+    PanelTemplates_SetTab(f, id)
+    for _, column in ipairs(COLUMNS) do headerTexts[column[1]]:SetText(column[3 + id]) end
+    showArrow()
+    ns.refresh(true)
+  end
+  ns.selectTab(ns.db.tab or 1)
 
   function ns.toggleUI(show)
     if show == nil then show = not f:IsShown() end

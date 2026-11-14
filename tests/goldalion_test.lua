@@ -1,5 +1,5 @@
 -- lua tests/goldalion_test.lua
--- 1) правила режима 1 на цифрах из docs/requirements.md; 2) сквозной прогон скана на заглушках API.
+-- 1) правила режимов 1 и 2 на цифрах из docs/requirements.md; 2) сквозной прогон скана на заглушках API.
 
 local ns = {}
 assert(loadfile("Goldalion/Deals.lua"))("Goldalion", ns)
@@ -61,6 +61,30 @@ assert(ns.historyMedian({ [1] = 100, [2] = 300 }, 3) == nil)
 assert(ns.historyMedian({ [1] = 100, [2] = 300, [5] = 200 }, 3) == 200)
 assert(ns.historyMedian(nil, 3) == nil)
 
+---------------------------------------------------------------- режим «торговцы»
+
+-- Пример из требований: нить по 10 м у торговца, на аукционе от 1 с, стак 20.
+local thread = { price = 10, stack = 20 }
+d = ns.findVendorDeal({ { price = 100, count = 5 }, { price = 150, count = 1 } }, nil, thread, opts)
+assert(d.units == 20 and d.cost == 200 and d.ref == 100 and d.min == 100 and d.lots == 6)
+assert(d.profit == 20 * 100 * 0.95 - 200 and math.abs(d.discount - 0.9) < 1e-9)
+
+-- Прибыль со стака меньше 10 с.
+assert(ns.findVendorDeal(lots(50), nil, thread, opts) == nil)
+
+-- На аукционе нет: без истории цена неизвестна, с историей берётся она.
+assert(ns.findVendorDeal({}, nil, thread, opts) == nil)
+d = ns.findVendorDeal({}, 200, thread, opts)
+assert(d.ref == 200 and d.min == nil and d.lots == 0)
+
+-- Единственный завышенный лот: история ниже, берётся она.
+d = ns.findVendorDeal(lots(1000), 100, thread, opts)
+assert(d.ref == 100 and d.min == 1000)
+
+-- Ограниченный запас: считается одна штука, даже если предмет складывается.
+d = ns.findVendorDeal(lots(50000), nil, { price = 2000, stack = 20, limited = true }, opts)
+assert(d.units == 1 and d.limited and d.profit == 50000 * 0.95 - 2000)
+
 ---------------------------------------------------------------- сквозной скан и окно
 
 -- День skipDay в исторической медиане не учитывается.
@@ -93,7 +117,30 @@ local AUCTIONS = {
   { "Ткань", 1, 1, 9000, 500, true },
   { "Хлам", 1, 0, 1, 300, true },      -- серое не хранится
   { "Без выкупа", 1, 2, 0, 400, true },
+  { "Нить", 5, 1, 500, 600, true },    -- товар торговца: 1 с за штуку
+  { "Нить", 1, 1, 120, 600, true },
 }
+-- { название, itemID, цена за пачку, штук в пачке, запас (−1 — без ограничения), стак, цена не только в деньгах }
+local MERCHANT = {
+  { "Нить", 600, 50, 5, -1, 20 },
+  { "Рецепт", 601, 2000, 1, 1, 1 },    -- на аукционе его нет и не было: цена неизвестна
+  { "За жетоны", 602, 100, 1, -1, 1, true },
+}
+local npcName = "Лавочник"
+function UnitName() return npcName end
+function GetRealZoneText() return "Оргриммар" end
+function GetMerchantNumItems() return #MERCHANT end
+function GetMerchantItemID(i) return MERCHANT[i][2] end
+function GetMerchantItemLink(i) return "|cnIQ1:|Hitem:1|h[" .. MERCHANT[i][1] .. "]|h|r" end
+function GetMerchantItemMaxStack(i) return MERCHANT[i][6] end
+C_MerchantFrame = {
+  GetItemInfo = function(i)
+    local m = MERCHANT[i]
+    return { name = m[1], price = m[3], stackCount = m[4], numAvailable = m[5], hasExtendedCost = m[7] or false }
+  end,
+}
+function PanelTemplates_SetNumTabs() end
+function PanelTemplates_SetTab() end
 
 print = function() end
 SlashCmdList, UISpecialFrames, UIParent = {}, {}, dummy()
@@ -163,6 +210,22 @@ proxies.GOLDALION_maxCost.set(13)
 assert(ns.opts.maxCost == 10000000 and proxies.GOLDALION_maxCost.get() == 13)
 proxies.GOLDALION_maxCost.set(5)
 assert(ns.opts.maxCost == 20000)
+
+-- Окно торговца: товары за деньги запоминаются с ценой за штуку, товар за жетоны — нет.
+fire("MERCHANT_SHOW")
+local known = db.vendor[600]
+assert(known.price == 10 and known.stack == 20 and known.limited == nil and known.npc == "Лавочник")
+assert(db.vendor[601].limited == true and db.vendor[602] == nil)
+-- Другой торговец продаёт дороже: остаётся дешёвый. Тот же торговец поднял цену: запись обновляется.
+npcName, MERCHANT[1][3] = "Барыга", 100
+fire("MERCHANT_UPDATE")
+assert(db.vendor[600].price == 10 and db.vendor[600].npc == "Лавочник")
+npcName = "Лавочник"
+fire("MERCHANT_SHOW")
+assert(db.vendor[600].price == 20)
+MERCHANT[1][3] = 50
+fire("MERCHANT_SHOW")
+assert(db.vendor[600].price == 10)
 runTimers()
 
 ns.startScan()
@@ -181,8 +244,27 @@ assert(ns.scanning == nil and ns.status == nil)
 assert(#db.lastDeals == 1, "ожидалась одна сделка, получено " .. #db.lastDeals)
 local deal = db.lastDeals[1]
 assert(deal.link:find(MONKEY, 1, true) and deal.lots == 2 and deal.cost == 4500 and deal.ref == 10000)
-assert(db.lastScan.lots == #AUCTIONS and db.lastScan.items == 3 and db.lastScan.withoutItemData == 0)
+assert(db.lastScan.lots == #AUCTIONS and db.lastScan.items == 4 and db.lastScan.withoutItemData == 0)
 assert(provider == db.lastDeals, "список в окне обновлён после скана")
+
+-- Вкладка «Торговцы»: нить по 10 м у торговца против 1 с на аукционе; рецепт без цены не показан.
+assert(#db.vendorDeals == 1, "ожидалась одна сделка торговцев, получено " .. #db.vendorDeals)
+local vendorDeal = db.vendorDeals[1]
+assert(vendorDeal.link:find("Нить", 1, true) and vendorDeal.reason == "Лавочник" and vendorDeal.zone == "Оргриммар")
+assert(vendorDeal.units == 20 and vendorDeal.cost == 200 and vendorDeal.ref == 100 and vendorDeal.lots == 6)
+ns.selectTab(2)
+assert(provider == db.vendorDeals and db.tab == 2, "вкладка показывает свой список")
+local vendorRow = dummy()
+rowInit(vendorRow, vendorDeal)
+assert(vendorRow.deal == vendorDeal)
+proxies.GOLDALION_vendorMinProfit.set(50)
+runTimers()
+assert(ns.opts.vendorMinProfit == 5000 and #db.vendorDeals == 0 and provider == db.vendorDeals)
+proxies.GOLDALION_vendorMinProfit.set(10)
+runTimers()
+assert(#db.vendorDeals == 1)
+ns.selectTab(1)
+assert(provider == db.lastDeals)
 
 local day = math.floor(os.time() / 86400)
 assert(db.history.Horde["100:" .. MONKEY][day] == 2000 and db.history.Horde["100:" .. WHALE][day] == 9000)
