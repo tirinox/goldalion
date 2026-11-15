@@ -289,7 +289,7 @@ assert(#db.vendorDeals == 2)
 -- Требуемый уровень: у нити и муки его нет, фильтр уровня их прячет.
 controls.vendorMinLevel.set(1)
 runTimers()
-assert(#db.vendorDeals == 0)
+assert(#provider == 0 and #db.vendorDeals == 2, "фильтр уровня прячет строки, список не пересчитывается")
 controls.vendorMinLevel.set(0)
 -- Только текущая зона: в Оргриммаре — нить, в зоне пекарей — мука, оба пекаря-продавца Орды.
 controls.vendorOnlyZone.set(true)
@@ -344,15 +344,19 @@ controls.openWithAuction.set(false)
 runTimers()
 assert(#db.lastDeals == 2 and ns.opts.openWithAuction == false)
 -- Требуемый уровень: перчатки 20-го проходят фильтр 20 и отсекаются фильтром 21, ткань без уровня — нет.
+-- Лотов в памяти нет, как после /reload: фильтр работает по сохранённому списку.
+local scan = ns.scan
+ns.scan = nil
 controls.minLevel.set(20)
 runTimers()
-assert(#db.lastDeals == 1 and db.lastDeals[1].link:find(MONKEY, 1, true))
+assert(#provider == 1 and provider[1].link:find(MONKEY, 1, true) and #db.lastDeals == 2)
 controls.minLevel.set(21)
 runTimers()
-assert(#db.lastDeals == 0)
+assert(#provider == 0)
 controls.minLevel.set(0)
 runTimers()
-assert(#db.lastDeals == 2)
+assert(provider == db.lastDeals and #provider == 2)
+ns.scan = scan
 
 -- Клик по заголовку сортирует список: новая колонка по убыванию, повторный клик — по возрастанию,
 -- текстовая колонка сразу по возрастанию.

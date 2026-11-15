@@ -23,6 +23,19 @@ local function currentDeals()
   return tab == VENDOR_TAB and ns.db.vendorDeals or ns.db.lastDeals
 end
 
+-- Фильтр уровня применяется при показе, поэтому работает и на сохранённом после /reload списке.
+-- Уровень неизвестен (сделка из старой версии или предмета не было в кеше) — считается нулевым.
+local function visibleDeals()
+  local deals = currentDeals()
+  local min = ns.opts[tab == VENDOR_TAB and "vendorMinLevel" or "minLevel"]
+  if min <= 0 then return deals end
+  local shown = {}
+  for _, deal in ipairs(deals) do
+    if (deal.level or 0) >= min then shown[#shown + 1] = deal end
+  end
+  return shown
+end
+
 local function createCells(parent, font)
   local cells, x = {}, FIRST_CELL_X
   for _, column in ipairs(COLUMNS) do
@@ -125,7 +138,7 @@ local function idleStatus()
   local last = ns.db.lastScan
   if not last then return "Открой аукцион и нажми «Сканировать»." end
   local text = ("Скан %d мин назад: лотов %d, сделок %d."):format(
-    math.floor((time() - last.time) / 60), last.lots, #currentDeals())
+    math.floor((time() - last.time) / 60), last.lots, #visibleDeals())
   if not ns.scan then text = text .. " Список сохранён с прошлого сеанса." end
   return text
 end
@@ -416,7 +429,7 @@ function ns.initUI()
     status:SetText(ns.status or idleStatus())
     scanButton:SetEnabled(ns.auctionOpen == true and ns.scanning == nil)
     if dealsChanged then
-      local deals = currentDeals()
+      local deals = visibleDeals()
       sortDeals(deals)
       scrollBox:SetDataProvider(CreateDataProvider(deals))
       empty:SetShown(#deals == 0)

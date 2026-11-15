@@ -63,9 +63,10 @@ function ns.seedVendor(itemID)
   return seeds[itemID]
 end
 
--- Требуемый уровень предмета не ниже min. Данных предмета нет в кеше — уровень считается нулевым.
-local function levelOk(itemID, min)
-  return min <= 0 or (select(5, C_Item.GetItemInfo(itemID)) or 0) >= min
+-- Требуемый уровень запоминается в сделке: фильтр по нему применяет окно, без пересчёта.
+-- nil, если данных предмета нет в кеше.
+local function requiredLevel(itemID)
+  return (select(5, C_Item.GetItemInfo(itemID)))
 end
 
 -- Пересчитывает сделки по лотам последнего скана с текущими настройками.
@@ -75,11 +76,11 @@ function ns.evaluate()
   local opts, deals = ns.opts, {}
   for key, lots in pairs(scan.lots) do
     local info = scan.info[key]
-    if info.quality >= opts.minQuality and levelOk(info.itemID, opts.minLevel) then
+    if info.quality >= opts.minQuality then
       local hist = ns.historyMedian(scan.history[key], opts.minHistoryDays, scan.day)
       local deal = ns.findDeal(lots, hist, opts)
       if deal then
-        deal.key, deal.link = key, info.link
+        deal.key, deal.link, deal.level = key, info.link, requiredLevel(info.itemID)
         deals[#deals + 1] = deal
       end
     end
@@ -90,7 +91,6 @@ function ns.evaluate()
   -- Режим «торговцы»: качество не фильтруется, предмет может отсутствовать на аукционе.
   local vendorDeals, here = {}, opts.vendorOnlyZone and GetRealZoneText()
   local function consider(key, itemID, vendor, link)
-    if not levelOk(itemID, opts.vendorMinLevel) then return end
     -- у запомненного товара торговец один, у стартовых данных — все из базы
     local seller, count = nil, 0
     for _, s in ipairs(vendor.sellers or { vendor }) do
@@ -103,7 +103,7 @@ function ns.evaluate()
     local deal = ns.findVendorDeal(scan.lots[key] or {}, hist, vendor, opts)
     if deal then
       deal.key, deal.link, deal.reason, deal.zone = key, link, seller.npc, seller.zone
-      deal.seed, deal.others = vendor.seed, count - 1
+      deal.seed, deal.others, deal.level = vendor.seed, count - 1, requiredLevel(itemID)
       vendorDeals[#vendorDeals + 1] = deal
     end
   end
