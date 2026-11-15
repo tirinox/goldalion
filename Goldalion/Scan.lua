@@ -43,20 +43,15 @@ local function lookupSeed(itemID)
   local price, questie = ns.vendorPrice[itemID], LibQuestieDB
   if not (price and questie and questie.RequireContract(QUESTIE_CONTRACT)) then return false end
   local faction = UnitFactionGroup("player") == "Horde" and "H" or "A"
-  local seed = false
+  local sellers = {}
   for _, npcID in ipairs(questie.Item.vendors(itemID) or {}) do
     local friendly = questie.Npc.friendlyToFaction(npcID)
     if not friendly or friendly:find(faction, 1, true) then
-      if seed then
-        seed.others = seed.others + 1
-      else
-        local area = questie.Npc.zoneID(npcID)
-        seed = { price = price, stack = ns.vendorStack[itemID] or 1, seed = true, others = 0,
-                 npc = questie.Npc.name(npcID) or "?", zone = area and C_Map.GetAreaInfo(area) or "" }
-      end
+      local area = questie.Npc.zoneID(npcID)
+      sellers[#sellers + 1] = { npc = questie.Npc.name(npcID) or "?", zone = area and C_Map.GetAreaInfo(area) or "" }
     end
   end
-  return seed
+  return #sellers > 0 and { price = price, stack = ns.vendorStack[itemID] or 1, seed = true, sellers = sellers }
 end
 
 function ns.seedVendor(itemID)
@@ -68,6 +63,11 @@ function ns.seedVendor(itemID)
   return seeds[itemID]
 end
 
+-- Требуемый уровень предмета не ниже min. Данных предмета нет в кеше — уровень считается нулевым.
+local function levelOk(itemID, min)
+  return min <= 0 or (select(5, C_Item.GetItemInfo(itemID)) or 0) >= min
+end
+
 -- Пересчитывает сделки по лотам последнего скана с текущими настройками.
 function ns.evaluate()
   local scan = ns.scan
@@ -75,7 +75,7 @@ function ns.evaluate()
   local opts, deals = ns.opts, {}
   for key, lots in pairs(scan.lots) do
     local info = scan.info[key]
-    if info.quality >= opts.minQuality then
+    if info.quality >= opts.minQuality and levelOk(info.itemID, opts.minLevel) then
       local hist = ns.historyMedian(scan.history[key], opts.minHistoryDays, scan.day)
       local deal = ns.findDeal(lots, hist, opts)
       if deal then
@@ -88,18 +88,27 @@ function ns.evaluate()
   db.lastDeals = deals
 
   -- Режим «торговцы»: качество не фильтруется, предмет может отсутствовать на аукционе.
-  local vendorDeals = {}
-  local function consider(key, vendor, link)
+  local vendorDeals, here = {}, opts.vendorOnlyZone and GetRealZoneText()
+  local function consider(key, itemID, vendor, link)
+    if not levelOk(itemID, opts.vendorMinLevel) then return end
+    -- у запомненного товара торговец один, у стартовых данных — все из базы
+    local seller, count = nil, 0
+    for _, s in ipairs(vendor.sellers or { vendor }) do
+      if not here or s.zone == here then
+        seller, count = seller or s, count + 1
+      end
+    end
+    if not seller then return end
     local hist = ns.historyMedian(scan.history[key], opts.minHistoryDays, scan.day)
     local deal = ns.findVendorDeal(scan.lots[key] or {}, hist, vendor, opts)
     if deal then
-      deal.key, deal.link, deal.reason, deal.zone = key, link, vendor.npc, vendor.zone
-      deal.seed, deal.others = vendor.seed, vendor.others
+      deal.key, deal.link, deal.reason, deal.zone = key, link, seller.npc, seller.zone
+      deal.seed, deal.others = vendor.seed, count - 1
       vendorDeals[#vendorDeals + 1] = deal
     end
   end
   for itemID, vendor in pairs(db.vendor) do
-    consider(itemID .. ":" .. (vendor.link:match("%[(.-)%]") or ""), vendor, vendor.link)
+    consider(itemID .. ":" .. (vendor.link:match("%[(.-)%]") or ""), itemID, vendor, vendor.link)
   end
   -- Товары, которых игрок у торговцев ещё не видел. В истории есть и все предметы текущего скана.
   for key in pairs(scan.history) do
@@ -108,7 +117,7 @@ function ns.evaluate()
     local vendor = itemID and not db.vendor[itemID] and ns.seedVendor(itemID)
     if vendor then
       local info = scan.info[key]
-      consider(key, vendor, info and info.link or ("|Hitem:%d|h[%s]|h"):format(itemID, name))
+      consider(key, itemID, vendor, info and info.link or ("|Hitem:%d|h[%s]|h"):format(itemID, name))
     end
   end
   table.sort(vendorDeals, function(a, b) return a.profit > b.profit end)
@@ -278,6 +287,7 @@ frame:RegisterEvent("AUCTION_HOUSE_CLOSED")
 frame:RegisterEvent("REPLICATE_ITEM_LIST_UPDATE")
 frame:RegisterEvent("MERCHANT_SHOW")
 frame:RegisterEvent("MERCHANT_UPDATE") -- данные товаров догружаются уже после MERCHANT_SHOW
+frame:RegisterEvent("ZONE_CHANGED_NEW_AREA") -- для фильтра «только текущая зона»
 frame:SetScript("OnEvent", function(_, event, name)
   if event == "ADDON_LOADED" then
     if name == ADDON then
@@ -307,6 +317,8 @@ frame:SetScript("OnEvent", function(_, event, name)
     setStatus(nil)
   elseif event == "MERCHANT_SHOW" or event == "MERCHANT_UPDATE" then
     recordMerchant()
+  elseif event == "ZONE_CHANGED_NEW_AREA" then
+    if ns.opts.vendorOnlyZone then ns.optionsChanged() end
   elseif ns.scanning == "wait" then -- первый REPLICATE_ITEM_LIST_UPDATE; дальше он сыплется на каждый догруженный предмет
     ns.scanning, total = "read", AH.GetNumReplicateItems()
     lotsByKey, infoByKey, deferred, requested = {}, {}, {}, {}

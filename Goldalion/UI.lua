@@ -1,4 +1,4 @@
--- Главное окно со списком сделок и панель настроек (Esc → Настройки → Модификации → Goldalion).
+-- Главное окно со списком сделок и всплывающее окно настроек (кнопка «Настройки»).
 
 local _, ns = ...
 
@@ -152,74 +152,165 @@ end
 
 local function same(value) return value end
 
-local function registerSettings()
-  local category = Settings.RegisterVerticalLayoutCategory("Goldalion")
+local function text(format)
+  return function(value) return format:format(value) end
+end
 
-  -- toSetting переводит значение из ns.opts (медь, доли) в единицы панели настроек, fromSetting — обратно.
-  local function proxy(key, label, toSetting, fromSetting)
-    toSetting, fromSetting = toSetting or same, fromSetting or same
-    local default = toSetting(ns.defaults[key])
-    return Settings.RegisterProxySetting(category, "GOLDALION_" .. key, type(default), label, default,
-      function() return toSetting(ns.opts[key]) end,
-      function(value)
-        ns.opts[key] = fromSetting(value)
-        ns.optionsChanged()
-      end)
-  end
+local function scaled(scale)
+  return function(value) return math.floor(value / scale + 0.5) end, function(value) return value * scale end
+end
 
-  local function slider(key, label, tooltip, min, max, step, formatter, toSetting, fromSetting)
-    local options = Settings.CreateSliderOptions(min, max, step)
-    options:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right, formatter)
-    Settings.CreateSlider(category, proxy(key, label, toSetting, fromSetting), options, tooltip)
-  end
+local function anyLevel(value)
+  return value == 0 and "любой" or tostring(value)
+end
 
-  local function text(format)
-    return function(value) return format:format(value) end
-  end
+-- key → { get, set } в единицах элемента (проценты, серебро, ступени); через них же работают тесты.
+local controls = {}
+ns.settingControls = controls
 
-  local function scaled(scale)
-    return function(value) return math.floor(value / scale + 0.5) end, function(value) return value * scale end
-  end
+local function setOption(key, value)
+  ns.opts[key] = value
+  ns.optionsChanged()
+end
 
-  slider("minDiscount", "Минимальная скидка",
-    "Лот должен быть дешевле опорной цены минимум на столько процентов.", 10, 90, 5, text("%d%%"), scaled(0.01))
-  slider("minProfit", "Минимальная прибыль",
-    "Сделки с ожидаемой прибылью меньше этой суммы не показываются.", 0, 500, 10, text("%d с"), scaled(100))
-  slider("maxCost", "Максимальная сумма выкупа",
-    "Лимит на выкуп всей дешёвой группы лотов одного предмета.", 1, #COST_STEPS, 1,
-    function(step)
-      local copper = stepToCost(step)
-      if copper >= 10000 then return ("%d з"):format(copper / 10000) end
-      return ("%d с"):format(copper / 100)
-    end, costToStep, stepToCost)
-  slider("maxLots", "Максимум лотов под выкуп",
-    "Сделки, где дешёвая группа больше стольких лотов, не показываются.", 1, 50, 1, text("%d"))
-  slider("outlierFactor", "Отсечение дорогих лотов",
-    "Лоты дороже стольких медиан не считаются конкурентами.", 2, 20, 1, text("×%d"))
+local function tip(region, label, tooltip)
+  region:HookScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText(label)
+    GameTooltip:AddLine(tooltip, 1, 1, 1, true)
+    GameTooltip:Show()
+  end)
+  region:HookScript("OnLeave", function() GameTooltip:Hide() end)
+end
 
-  slider("vendorMinProfit", "Торговцы: минимальная прибыль",
-    "Вкладка «Торговцы»: прибыль с одной закупки (стака) не меньше этой суммы.", 0, 200, 5, text("%d с"), scaled(100))
+-- Элементы складываются на странице сверху вниз, page.y — отступ следующего.
+local function title(page, label)
+  local fs = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  fs:SetPoint("TOPLEFT", 0, page.y)
+  fs:SetText(label)
+  return fs
+end
 
-  Settings.CreateDropdown(category, proxy("minQuality", "Минимальное качество"), function()
-    local container = Settings.CreateControlTextContainer()
-    for quality = 1, 4 do
-      container:Add(quality, _G["ITEM_QUALITY" .. quality .. "_DESC"])
+-- toUI переводит значение из ns.opts (медь, доли) в единицы ползунка, fromUI — обратно.
+local function slider(page, key, label, tooltip, min, max, step, formatter, toUI, fromUI)
+  toUI, fromUI = toUI or same, fromUI or same
+  local s = CreateFrame("Frame", nil, page, "MinimalSliderWithSteppersTemplate")
+  s:SetPoint("TOPLEFT", title(page, label), "BOTTOMLEFT", 0, -2)
+  s:SetSize(200, 26)
+  s:Init(toUI(ns.opts[key]), min, max, (max - min) / step, { [MinimalSliderWithSteppersMixin.Label.Right] = formatter })
+  controls[key] = {
+    get = function() return toUI(ns.opts[key]) end,
+    set = function(value) setOption(key, fromUI(value)) end,
+  }
+  s:RegisterCallback(MinimalSliderWithSteppersMixin.Event.OnValueChanged, function(_, value)
+    controls[key].set(math.floor(value + 0.5)) -- все шкалы целочисленные
+  end, s)
+  tip(s.Slider, label, tooltip)
+  page.y = page.y - 46
+end
+
+local function checkbox(page, key, label, tooltip)
+  local c = CreateFrame("CheckButton", nil, page, "UICheckButtonTemplate")
+  c:SetPoint("TOPLEFT", -6, page.y + 4)
+  c.Text:SetText(label)
+  c:SetChecked(ns.opts[key])
+  controls[key] = { get = function() return ns.opts[key] end, set = function(value) setOption(key, value) end }
+  c:SetScript("OnClick", function(self) controls[key].set(self:GetChecked()) end)
+  tip(c, label, tooltip)
+  page.y = page.y - 30
+end
+
+-- values: { { значение, текст }, ... }
+local function dropdown(page, key, label, tooltip, values)
+  local d = CreateFrame("DropdownButton", nil, page, "WowStyle1DropdownTemplate")
+  d:SetPoint("TOPLEFT", title(page, label), "BOTTOMLEFT", 0, -4)
+  d:SetWidth(200)
+  controls[key] = { get = function() return ns.opts[key] end, set = function(value) setOption(key, value) end }
+  d:SetupMenu(function(_, root)
+    for _, item in ipairs(values) do
+      root:CreateRadio(item[2], function() return ns.opts[key] == item[1] end, function() controls[key].set(item[1]) end)
     end
-    return container:GetData()
-  end, "Предметы ниже этого качества не показываются.")
+  end)
+  tip(d, label, tooltip)
+  page.y = page.y - 50
+end
 
-  Settings.CreateCheckbox(category, proxy("openWithAuction", "Открывать вместе с аукционом"),
-    "Показывать окно Goldalion при открытии аукциона.")
+local function levelSlider(page, key)
+  slider(page, key, "Минимальный требуемый уровень",
+    "Предметы, для которых нужен уровень ниже этого, не показываются. 0 — без ограничения.", 0, 60, 1, anyLevel)
+end
 
-  Settings.RegisterAddOnCategory(category)
-  return category
+local SETTINGS_PAGES = {
+  function(page) -- «Скидки»
+    slider(page, "minDiscount", "Минимальная скидка",
+      "Лот должен быть дешевле опорной цены минимум на столько процентов.", 10, 90, 5, text("%d%%"), scaled(0.01))
+    slider(page, "minProfit", "Минимальная прибыль",
+      "Сделки с ожидаемой прибылью меньше этой суммы не показываются.", 0, 500, 10, text("%d с"), scaled(100))
+    slider(page, "maxCost", "Максимальная сумма выкупа",
+      "Лимит на выкуп всей дешёвой группы лотов одного предмета.", 1, #COST_STEPS, 1,
+      function(step)
+        local copper = stepToCost(step)
+        if copper >= 10000 then return ("%d з"):format(copper / 10000) end
+        return ("%d с"):format(copper / 100)
+      end, costToStep, stepToCost)
+    slider(page, "maxLots", "Максимум лотов под выкуп",
+      "Сделки, где дешёвая группа больше стольких лотов, не показываются.", 1, 50, 1, text("%d"))
+    slider(page, "outlierFactor", "Отсечение дорогих лотов",
+      "Лоты дороже стольких медиан не считаются конкурентами.", 2, 20, 1, text("×%d"))
+    levelSlider(page, "minLevel")
+    local qualities = {}
+    for quality = 1, 4 do qualities[quality] = { quality, _G["ITEM_QUALITY" .. quality .. "_DESC"] } end
+    dropdown(page, "minQuality", "Минимальное качество", "Предметы ниже этого качества не показываются.", qualities)
+  end,
+  function(page) -- «Торговцы»
+    slider(page, "vendorMinProfit", "Минимальная прибыль",
+      "Прибыль с одной закупки (стака) не меньше этой суммы.", 0, 200, 5, text("%d с"), scaled(100))
+    levelSlider(page, "vendorMinLevel")
+    checkbox(page, "vendorOnlyZone", "Только текущая зона",
+      "Показывать только товары торговцев из зоны, где сейчас персонаж.")
+  end,
+}
+
+-- Всплывающее окно справа от главного: настройки текущей вкладки и общие внизу.
+local function createSettings(f)
+  local p = CreateFrame("Frame", "GoldalionSettingsFrame", f, "ButtonFrameTemplate")
+  ButtonFrameTemplate_HidePortrait(p)
+  ButtonFrameTemplate_HideButtonBar(p)
+  p:SetSize(260, 460)
+  p:SetPoint("TOPLEFT", f, "TOPRIGHT", 2, 0)
+  p:EnableMouse(true)
+  p:Hide()
+  tinsert(UISpecialFrames, "GoldalionSettingsFrame")
+
+  local function page()
+    local frame = CreateFrame("Frame", nil, p)
+    frame:SetPoint("TOPLEFT", p.Inset, "TOPLEFT", 14, -12)
+    frame:SetPoint("BOTTOMRIGHT", p.Inset, "BOTTOMRIGHT", -8, 8)
+    frame.y = 0
+    return frame
+  end
+
+  local pages = {}
+  for id, build in ipairs(SETTINGS_PAGES) do
+    pages[id] = page()
+    build(pages[id])
+  end
+  local common = page()
+  common:ClearAllPoints()
+  common:SetPoint("BOTTOMLEFT", p.Inset, "BOTTOMLEFT", 14, 8)
+  common:SetSize(220, 26)
+  checkbox(common, "openWithAuction", "Открывать вместе с аукционом", "Показывать окно Goldalion при открытии аукциона.")
+
+  function p.showPage(id)
+    p:SetTitle("Настройки: " .. TABS[id])
+    for i, frame in ipairs(pages) do frame:SetShown(i == id) end
+  end
+  return p
 end
 
 ---------------------------------------------------------------- окно
 
 function ns.initUI()
-  local category = registerSettings()
-
   local width = FIRST_CELL_X + 60 -- отступы и полоса прокрутки
   for _, column in ipairs(COLUMNS) do width = width + column[2] + CELL_GAP end
 
@@ -253,7 +344,8 @@ function ns.initUI()
   settingsButton:SetSize(100, 22)
   settingsButton:SetPoint("TOPRIGHT", -12, -28)
   settingsButton:SetText("Настройки")
-  settingsButton:SetScript("OnClick", function() Settings.OpenToCategory(category:GetID()) end)
+  local settings = createSettings(f)
+  settingsButton:SetScript("OnClick", function() settings:SetShown(not settings:IsShown()) end)
 
   local status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   status:SetPoint("LEFT", scanButton, "RIGHT", 10, 0)
@@ -345,6 +437,7 @@ function ns.initUI()
   function ns.selectTab(id)
     tab, ns.db.tab = id, id
     PanelTemplates_SetTab(f, id)
+    settings.showPage(id)
     for _, column in ipairs(COLUMNS) do headerTexts[column[1]]:SetText(column[3 + id]) end
     showArrow()
     ns.refresh(true)

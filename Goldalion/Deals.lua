@@ -18,7 +18,10 @@ ns.opts = {
   -- ponytail: комиссия 5% взята из Classic и в Forever не проверена; сверить по первому письму о продаже
   cut = 0.05,
   openWithAuction = true, -- показывать окно при открытии аукциона
+  minLevel = 0,          -- требуемый уровень предмета не ниже; 0 — любой
   vendorMinProfit = 10 * 100, -- режим «торговцы»: 10 с с одной закупки (стака)
+  vendorMinLevel = 0,
+  vendorOnlyZone = false, -- только торговцы в текущей зоне
 }
 
 function ns.median(sorted)

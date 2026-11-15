@@ -107,7 +107,7 @@ end
 dummyMeta.__call = function() return dummy() end
 
 local handler, timers, loaded = nil, {}, false
-local proxies, rowInit, shown, provider = {}, nil, false, nil
+local rowInit, shown, provider = nil, false, nil
 local MONKEY, WHALE = "Перчатки обезьяны", "Перчатки кита"
 -- { название, количество, качество, выкуп, itemID, данные загружены сразу }
 local AUCTIONS = {
@@ -148,7 +148,8 @@ local MERCHANT = {
 }
 local npcName = "Лавочник"
 function UnitName() return npcName end
-function GetRealZoneText() return "Оргриммар" end
+local zoneName = "Оргриммар"
+function GetRealZoneText() return zoneName end
 function GetMerchantNumItems() return #MERCHANT end
 function GetMerchantItemID(i) return MERCHANT[i][2] end
 function GetMerchantItemLink(i) return "|cnIQ1:|Hitem:1|h[" .. MERCHANT[i][1] .. "]|h|r" end
@@ -188,17 +189,13 @@ function CreateFrame(_, name, _, template)
   end
   return f
 end
-Settings = setmetatable({
-  RegisterProxySetting = function(_, variable, _, _, default, get, set)
-    proxies[variable] = { default = default, get = get, set = set }
-    return dummy()
-  end,
-}, dummyMeta)
 function UnitFactionGroup() return "Horde" end
 C_Timer = { After = function(_, fn) timers[#timers + 1] = fn end }
 C_Item = {
   RequestLoadItemDataByID = function() end,
   GetItemInfoInstant = function() return 1, "", "", "", 134400, 4, 0 end,
+  -- требуемый уровень: перчатки 20-го, остальное без ограничения
+  GetItemInfo = function(id) return "", "", 1, 1, id == 100 and 20 or 0 end,
 }
 C_AuctionHouse = {
   ReplicateItems = function() end,
@@ -219,16 +216,17 @@ end
 
 fire("ADDON_LOADED", "Goldalion")
 local db = GoldalionDB
+local controls = ns.settingControls
 assert(ns.opts == db.opts and ns.opts.minDiscount == 0.5, "настройки по умолчанию видны через сохранённые")
-assert(proxies.GOLDALION_minDiscount.default == 50 and proxies.GOLDALION_minDiscount.get() == 50)
-assert(proxies.GOLDALION_minProfit.get() == 50 and proxies.GOLDALION_maxLots.get() == 10)
+assert(controls.minDiscount.get() == 50)
+assert(controls.minProfit.get() == 50 and controls.maxLots.get() == 10)
 -- Сумма выкупа: 13 ступеней от 10 с до 1000 з, 2 з — пятая.
-assert(proxies.GOLDALION_maxCost.default == 5 and proxies.GOLDALION_maxCost.get() == 5)
-proxies.GOLDALION_maxCost.set(1)
+assert(controls.maxCost.get() == 5)
+controls.maxCost.set(1)
 assert(ns.opts.maxCost == 1000)
-proxies.GOLDALION_maxCost.set(13)
-assert(ns.opts.maxCost == 10000000 and proxies.GOLDALION_maxCost.get() == 13)
-proxies.GOLDALION_maxCost.set(5)
+controls.maxCost.set(13)
+assert(ns.opts.maxCost == 10000000 and controls.maxCost.get() == 13)
+controls.maxCost.set(5)
 assert(ns.opts.maxCost == 20000)
 
 -- Окно торговца: товары за деньги запоминаются с ценой за штуку, товар за жетоны — нет.
@@ -282,12 +280,31 @@ assert(provider == db.vendorDeals and db.tab == 2, "вкладка показы�
 local vendorRow = dummy()
 rowInit(vendorRow, vendorDeal)
 assert(vendorRow.deal == vendorDeal)
-proxies.GOLDALION_vendorMinProfit.set(50)
+controls.vendorMinProfit.set(50)
 runTimers()
 assert(ns.opts.vendorMinProfit == 5000 and #db.vendorDeals == 0 and provider == db.vendorDeals)
-proxies.GOLDALION_vendorMinProfit.set(10)
+controls.vendorMinProfit.set(10)
 runTimers()
 assert(#db.vendorDeals == 2)
+-- Требуемый уровень: у нити и муки его нет, фильтр уровня их прячет.
+controls.vendorMinLevel.set(1)
+runTimers()
+assert(#db.vendorDeals == 0)
+controls.vendorMinLevel.set(0)
+-- Только текущая зона: в Оргриммаре — нить, в зоне пекарей — мука, оба пекаря-продавца Орды.
+controls.vendorOnlyZone.set(true)
+runTimers()
+assert(#db.vendorDeals == 1 and db.vendorDeals[1].reason == "Лавочник")
+zoneName = "Зона 1637"
+fire("ZONE_CHANGED_NEW_AREA")
+runTimers()
+assert(#db.vendorDeals == 1 and db.vendorDeals[1].reason == "Пекарь 12" and db.vendorDeals[1].others == 1)
+zoneName = "Оргриммар"
+controls.vendorOnlyZone.set(false)
+runTimers()
+assert(#db.vendorDeals == 2)
+fire("ZONE_CHANGED_NEW_AREA") -- фильтр выключен: пересчёта нет
+assert(#timers == 0)
 -- Игрок дошёл до торговца мукой: его цена заменяет стартовую.
 MERCHANT[#MERCHANT + 1] = { "Мука", 700, 30, 1, -1, 20 }
 fire("MERCHANT_SHOW")
@@ -296,7 +313,7 @@ seedDeal = db.vendorDeals[1]
 assert(seedDeal.link:find("Мука", 1, true) and seedDeal.seed == nil and seedDeal.price == 30 and seedDeal.reason == "Лавочник")
 -- Без Questie или при его ошибке стартовых данных нет, пересчёт не падает.
 LibQuestieDB.Item.vendors = function() error("сломано") end
-assert(ns.seedVendor(701) == false and ns.seedVendor(700).npc == "Пекарь 12", "ответ по предмету кешируется")
+assert(ns.seedVendor(701) == false and ns.seedVendor(700).sellers[1].npc == "Пекарь 12", "ответ по предмету кешируется")
 ns.selectTab(1)
 assert(provider == db.lastDeals)
 
@@ -316,16 +333,26 @@ assert(row.deal == deal and row.created == true)
 assert(ns.money(4500) == "45с 0м" and ns.money(14500) == "1з 45с" and ns.money(7) == "7м")
 
 -- Смена настроек пересчитывает сделки без нового скана.
-proxies.GOLDALION_minQuality.set(1)
+controls.minQuality.set(1)
 runTimers()
 assert(#db.lastDeals == 2 and rawget(db.opts, "minQuality") == 1, "белая ткань появилась в списке")
-proxies.GOLDALION_minDiscount.set(99)
+controls.minDiscount.set(99)
 runTimers()
 assert(ns.opts.minDiscount == 0.99 and #db.lastDeals == 0 and provider == db.lastDeals)
-proxies.GOLDALION_minDiscount.set(50)
-proxies.GOLDALION_openWithAuction.set(false)
+controls.minDiscount.set(50)
+controls.openWithAuction.set(false)
 runTimers()
 assert(#db.lastDeals == 2 and ns.opts.openWithAuction == false)
+-- Требуемый уровень: перчатки 20-го проходят фильтр 20 и отсекаются фильтром 21, ткань без уровня — нет.
+controls.minLevel.set(20)
+runTimers()
+assert(#db.lastDeals == 1 and db.lastDeals[1].link:find(MONKEY, 1, true))
+controls.minLevel.set(21)
+runTimers()
+assert(#db.lastDeals == 0)
+controls.minLevel.set(0)
+runTimers()
+assert(#db.lastDeals == 2)
 
 -- Клик по заголовку сортирует список: новая колонка по убыванию, повторный клик — по возрастанию,
 -- текстовая колонка сразу по возрастанию.
