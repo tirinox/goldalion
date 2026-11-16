@@ -1,5 +1,5 @@
 -- lua tests/goldalion_test.lua
--- 1) правила режимов 1 и 2 на цифрах из docs/requirements.md; 2) сквозной прогон скана на заглушках API.
+-- 1) правила режимов на цифрах из docs/requirements.md; 2) сквозной прогон скана на заглушках API.
 
 local ns = {}
 assert(loadfile("Goldalion/VendorPrices.lua"))("Goldalion", ns)
@@ -90,6 +90,16 @@ assert(d.ref == 100 and d.min == 1000)
 d = ns.findVendorDeal(lots(50000), nil, { price = 2000, stack = 20, limited = true }, opts)
 assert(d.units == 1 and d.limited and d.profit == 50000 * 0.95 - 2000)
 
+---------------------------------------------------------------- режим «сдать торговцу»
+
+-- Пример из требований: торговец берёт по 15 с; лот за 1 м и стак 5 × 10 с выкупаются, лот за 20 с — нет.
+d = ns.findSellDeal({ { price = 1, count = 1 }, { price = 1000, count = 5 }, { price = 2000, count = 1 } }, 1500, opts)
+assert(d.lots == 2 and d.units == 6 and d.cost == 5001 and d.ref == 1500 and d.profit == 6 * 1500 - 5001)
+-- Прибыль меньше 10 с; лот ровно по цене торговца; торговец предмет не берёт (цена 0).
+assert(ns.findSellDeal(lots(1400), 1500, opts) == nil)
+assert(ns.findSellDeal(lots(1500), 1500, opts) == nil)
+assert(ns.findSellDeal(lots(1), 0, opts) == nil)
+
 ---------------------------------------------------------------- сквозной скан и окно
 
 -- День skipDay в исторической медиане не учитывается.
@@ -120,7 +130,9 @@ local AUCTIONS = {
   { "Ткань", 1, 1, 200, 500, true },   -- белое: хранится, но скрыто настройкой качества
   { "Ткань", 1, 1, 9000, 500, true },
   { "Ткань", 1, 1, 9000, 500, true },
-  { "Хлам", 1, 0, 1, 300, true },      -- серое не хранится
+  { "Хлам", 1, 0, 1, 300, true },      -- серое: торговец берёт по 15 с, в «Скидках» не показывается
+  { "Хлам", 5, 0, 5000, 300, true },
+  { "Хлам", 1, 0, 2000, 300, true },
   { "Без выкупа", 1, 2, 0, 400, true },
   { "Нить", 5, 1, 500, 600, true },    -- товар торговца: 1 с за штуку
   { "Нить", 1, 1, 120, 600, true },
@@ -194,8 +206,8 @@ C_Timer = { After = function(_, fn) timers[#timers + 1] = fn end }
 C_Item = {
   RequestLoadItemDataByID = function() end,
   GetItemInfoInstant = function() return 1, "", "", "", 134400, 4, 0 end,
-  -- требуемый уровень: перчатки 20-го, остальное без ограничения
-  GetItemInfo = function(id) return "", "", 1, 1, id == 100 and 20 or 0 end,
+  -- требуемый уровень: перчатки 20-го, остальное без ограничения; торговцу сдаётся только хлам
+  GetItemInfo = function(id) return "", "", 1, 1, id == 100 and 20 or 0, "", "", 1, "", 1, id == 300 and 1500 or 0 end,
 }
 C_AuctionHouse = {
   ReplicateItems = function() end,
@@ -262,7 +274,7 @@ assert(ns.scanning == nil and ns.status == nil)
 assert(#db.lastDeals == 1, "ожидалась одна сделка, получено " .. #db.lastDeals)
 local deal = db.lastDeals[1]
 assert(deal.link:find(MONKEY, 1, true) and deal.lots == 2 and deal.cost == 4500 and deal.ref == 10000)
-assert(db.lastScan.lots == #AUCTIONS and db.lastScan.items == 5 and db.lastScan.withoutItemData == 0)
+assert(db.lastScan.lots == #AUCTIONS and db.lastScan.items == 6 and db.lastScan.withoutItemData == 0)
 assert(provider == db.lastDeals, "список в окне обновлён после скана")
 
 -- Вкладка «Торговцы»: нить по 10 м у торговца против 1 с на аукционе; рецепт без цены не показан.
@@ -314,6 +326,24 @@ assert(seedDeal.link:find("Мука", 1, true) and seedDeal.seed == nil and seed
 -- Без Questie или при его ошибке стартовых данных нет, пересчёт не падает.
 LibQuestieDB.Item.vendors = function() error("сломано") end
 assert(ns.seedVendor(701) == false and ns.seedVendor(700).sellers[1].npc == "Пекарь 12", "ответ по предмету кешируется")
+
+-- Вкладка «Сдать торговцу»: два лота хлама из трёх дешевле 15 с за штуку. Фильтр уровня «Скидок» её не трогает.
+assert(#db.sellDeals == 1, "ожидалась одна сделка продажи торговцу, получено " .. #db.sellDeals)
+local sellDeal = db.sellDeals[1]
+assert(sellDeal.link:find("Хлам", 1, true) and sellDeal.lots == 2 and sellDeal.reason == 6)
+assert(sellDeal.cost == 5001 and sellDeal.ref == 1500 and sellDeal.profit == 3999)
+ns.selectTab(3)
+assert(provider == db.sellDeals and db.tab == 3)
+rowInit(dummy(), sellDeal)
+controls.minLevel.set(60)
+controls.sellMinProfit.set(50)
+runTimers()
+assert(#db.sellDeals == 0 and provider == db.sellDeals)
+controls.sellMinProfit.set(10)
+runTimers()
+assert(#provider == 1)
+controls.minLevel.set(0)
+runTimers()
 ns.selectTab(1)
 assert(provider == db.lastDeals)
 

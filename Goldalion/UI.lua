@@ -5,29 +5,27 @@ local _, ns = ...
 local ROW_HEIGHT = 22
 local CELL_GAP = 8
 local FIRST_CELL_X = 28 -- место под иконку
-local COLUMNS = { -- ключ, ширина, выравнивание, заголовок на вкладке «Скидки», на вкладке «Торговцы»
-  { "name", 240, "LEFT", "Предмет", "Предмет" },
-  { "lots", 50, "RIGHT", "Лотов", "На ауке" },
-  { "cost", 85, "RIGHT", "Выкуп", "Закупка" },
-  { "ref", 85, "RIGHT", "Опорная", "Аукцион" },
-  { "discount", 60, "RIGHT", "Скидка", "Скидка" },
-  { "profit", 85, "RIGHT", "Прибыль", "Прибыль" },
-  { "reason", 110, "LEFT", "Причина", "Торговец" },
+local COLUMNS = { -- ключ, ширина, выравнивание, заголовки по вкладкам
+  { "name", 240, "LEFT", "Предмет", "Предмет", "Предмет" },
+  { "lots", 50, "RIGHT", "Лотов", "На ауке", "Лотов" },
+  { "cost", 85, "RIGHT", "Выкуп", "Закупка", "Выкуп" },
+  { "ref", 85, "RIGHT", "Опорная", "Аукцион", "Торговцу" },
+  { "discount", 60, "RIGHT", "Скидка", "Скидка", "Скидка" },
+  { "profit", 85, "RIGHT", "Прибыль", "Прибыль", "Прибыль" },
+  { "reason", 110, "LEFT", "Причина", "Торговец", "Штук" },
 }
-local TABS = { "Скидки", "Торговцы" }
+local TABS = { "Скидки", "Торговцы", "Сдать торговцу" }
+local DEALS = { "lastDeals", "vendorDeals", "sellDeals" } -- списки сделок вкладок в ns.db
+local LEVEL_OPT = { "minLevel", "vendorMinLevel" }       -- у «Сдать торговцу» фильтра уровня нет
 local VENDOR_TAB = 2
 local REASON = { neighbors = "соседи", history = "история" }
 local tab = 1
 
-local function currentDeals()
-  return tab == VENDOR_TAB and ns.db.vendorDeals or ns.db.lastDeals
-end
-
 -- Фильтр уровня применяется при показе, поэтому работает и на сохранённом после /reload списке.
 -- Уровень неизвестен (сделка из старой версии или предмета не было в кеше) — считается нулевым.
 local function visibleDeals()
-  local deals = currentDeals()
-  local min = ns.opts[tab == VENDOR_TAB and "vendorMinLevel" or "minLevel"]
+  local deals, levelOpt = ns.db[DEALS[tab]], LEVEL_OPT[tab]
+  local min = levelOpt and ns.opts[levelOpt] or 0
   if min <= 0 then return deals end
   local shown = {}
   for _, deal in ipairs(deals) do
@@ -113,7 +111,7 @@ local function initRow(row, deal)
   cells.ref:SetText(ns.money(deal.ref))
   cells.discount:SetText(("%.0f%%"):format(deal.discount * 100))
   cells.profit:SetText(ns.money(deal.profit))
-  cells.reason:SetText(REASON[deal.reason] or deal.reason) -- у торговцев здесь имя NPC
+  cells.reason:SetText(REASON[deal.reason] or deal.reason) -- у торговцев здесь имя NPC, у «Сдать торговцу» — штук
 end
 
 -- Сортировка списка: клик по заголовку колонки, повторный клик меняет направление.
@@ -281,6 +279,11 @@ local SETTINGS_PAGES = {
     levelSlider(page, "vendorMinLevel")
     checkbox(page, "vendorOnlyZone", "Только текущая зона",
       "Показывать только товары торговцев из зоны, где сейчас персонаж.")
+  end,
+  function(page) -- «Сдать торговцу»
+    slider(page, "sellMinProfit", "Минимальная прибыль",
+      "Прибыль с выкупа всех лотов предмета, которые дешевле цены торговца, не меньше этой суммы.",
+      0, 200, 5, text("%d с"), scaled(100))
   end,
 }
 

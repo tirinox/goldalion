@@ -1,4 +1,4 @@
--- Полный скан аукциона, история цен, товары торговцев и пересчёт сделок обоих режимов.
+-- Полный скан аукциона, история цен, товары торговцев и пересчёт сделок всех режимов.
 --   /gold        показать или скрыть окно
 --   /gold scan   полный скан (аукцион должен быть открыт)
 
@@ -8,7 +8,6 @@ local frame = CreateFrame("Frame")
 
 local BATCH = 500           -- лотов за кадр
 local RETRY_PASSES = 5      -- повторных проходов по лотам без данных предмета
-local MIN_QUALITY_KEPT = 1  -- серое не храним вообще
 
 local db
 local t0, total, lotsByKey, infoByKey, deferred, requested
@@ -73,9 +72,17 @@ end
 function ns.evaluate()
   local scan = ns.scan
   if not scan then return end -- после /reload лотов в памяти нет: остаётся сохранённый список
-  local opts, deals = ns.opts, {}
+  local opts, deals, sellDeals = ns.opts, {}, {}
   for key, lots in pairs(scan.lots) do
     local info = scan.info[key]
+    -- Режим «сдать торговцу»: качество не фильтруется. Цена продажи торговцу у всех суффиксов
+    -- одна; запоминается, когда данные предмета появились в кеше. 0 — торговец не берёт.
+    info.sell = info.sell or select(11, C_Item.GetItemInfo(info.itemID))
+    local sellDeal = info.sell and ns.findSellDeal(lots, info.sell, opts)
+    if sellDeal then
+      sellDeal.key, sellDeal.link, sellDeal.reason = key, info.link, sellDeal.units -- в последней колонке — штук
+      sellDeals[#sellDeals + 1] = sellDeal
+    end
     if info.quality >= opts.minQuality then
       local hist = ns.historyMedian(scan.history[key], opts.minHistoryDays, scan.day)
       local deal = ns.findDeal(lots, hist, opts)
@@ -87,6 +94,8 @@ function ns.evaluate()
   end
   table.sort(deals, function(a, b) return a.profit > b.profit end)
   db.lastDeals = deals
+  table.sort(sellDeals, function(a, b) return a.profit > b.profit end)
+  db.sellDeals = sellDeals
 
   -- Режим «торговцы»: качество не фильтруется, предмет может отсутствовать на аукционе.
   local vendorDeals, here = {}, opts.vendorOnlyZone and GetRealZoneText()
@@ -188,7 +197,7 @@ local function addLot(index)
     end
     return false
   end
-  if buyout == 0 or count == 0 or quality < MIN_QUALITY_KEPT then return true end
+  if buyout == 0 or count == 0 then return true end
 
   -- Вариант предмета (суффикс) различаем по названию из ссылки.
   local link = AH.GetReplicateItemLink(index)
@@ -297,6 +306,7 @@ frame:SetScript("OnEvent", function(_, event, name)
       db.lastDeals = db.lastDeals or {}
       db.vendor = db.vendor or {}           -- itemID → товар торговца
       db.vendorDeals = db.vendorDeals or {}
+      db.sellDeals = db.sellDeals or {}
       db.opts = db.opts or {}
       ns.db = db
       -- В db.opts лежит только то, что игрок поменял; остальное берётся из значений по умолчанию.

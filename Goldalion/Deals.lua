@@ -1,4 +1,4 @@
--- Режим 1 «большая скидка» и режим 2 «торговцы»: правила в docs/requirements.md.
+-- Режимы 1 «большая скидка», 2 «торговцы» и 3 «сдать торговцу»: правила в docs/requirements.md.
 -- Чистая логика без API игры, проверяется в tests/goldalion_test.lua.
 
 local _, ns = ...
@@ -22,6 +22,7 @@ ns.opts = {
   vendorMinProfit = 10 * 100, -- режим «торговцы»: 10 с с одной закупки (стака)
   vendorMinLevel = 0,
   vendorOnlyZone = false, -- только торговцы в текущей зоне
+  sellMinProfit = 10 * 100, -- режим «сдать торговцу»: 10 с со всех выкупленных лотов предмета
 }
 
 function ns.median(sorted)
@@ -106,4 +107,19 @@ function ns.findVendorDeal(lots, hist, vendor, opts)
   if profit < opts.vendorMinProfit then return nil end
   return { lots = supply, units = units, cost = cost, ref = ref, discount = 1 - vendor.price / ref,
            profit = profit, price = vendor.price, min = min, limited = vendor.limited }
+end
+
+-- Режим 3 «сдать торговцу»: выкупить лоты дешевле цены продажи торговцу и продать ему.
+-- sell: цена продажи торговцу за штуку. Комиссии аукциона нет, цена гарантирована.
+-- Возвращает { lots, units, cost, ref, discount, profit } или nil.
+function ns.findSellDeal(lots, sell, opts)
+  local cost, units, count = 0, 0, 0
+  for _, lot in ipairs(lots) do
+    if lot.price < sell then
+      cost, units, count = cost + lot.price * lot.count, units + lot.count, count + 1
+    end
+  end
+  local profit = units * sell - cost
+  if count == 0 or profit < opts.sellMinProfit then return nil end
+  return { lots = count, units = units, cost = cost, ref = sell, discount = 1 - cost / units / sell, profit = profit }
 end
